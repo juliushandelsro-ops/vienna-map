@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viedeň – byty v nových štvrtiach</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#f6f7f4; --ink:#1d2a2e; --accent:#0f6b6f; --pin:#d4572a; --line:#d9ddd6; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161d1f; --ink:#e8ece9; --accent:#5fc3c7; --pin:#ff8a5c; --line:#2b3739; } }
+  html, body { height:100%; margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+  body { display:flex; flex-direction:column; }
+  header { padding:10px 14px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { font-size:1.05rem; margin:0; }
+  #status { font-size:.85rem; opacity:.75; }
+  #map { flex:1; }
+  .leaflet-popup-content { font-size:.9rem; line-height:1.4; color:#1d2a2e; }
+  .leaflet-popup-content a { color:#0f6b6f; font-weight:600; }
+  .pin { width:14px; height:14px; border-radius:50%; background:var(--pin); border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.35); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Viedeň – 3-izbové byty, 70 m²+</h1>
+  <span id="status">Načítavam…</span>
+</header>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  // Doplň vlastné hodnoty (anon kľúč je určený na verejné použitie, chráni ho RLS politika)
+  const SUPABASE_URL = "https://oscvjsereorwihymgthk.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9zY3Zqc2VyZW9yd2loeW1ndGhrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkyMzUyNTQsImV4cCI6MjEwNDgxMTI1NH0.CAeK-Q4jNUiW3sBijhSBzSUw1_fc8l0o0dbvmtZ8EpA";
+
+  const map = L.map("map").setView([48.2082, 16.3738], 12);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19, attribution: "© OpenStreetMap, © CARTO"
+  }).addTo(map);
+
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const status = document.getElementById("status");
+
+  const ZONES = {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": "Nordbahnviertel", "district": "2. Leopoldstadt", "note": "Nová štvrť na bývalej Nordbahnhof, park Rudolf-Bednar, bývanie + parter"}, "geometry": {"type": "Polygon", "coordinates": [[[16.3895, 48.22], [16.399, 48.2215], [16.403, 48.229], [16.396, 48.231], [16.389, 48.225], [16.3895, 48.22]]]}}, {"type": "Feature", "properties": {"name": "Viertel Zwei / Krieau", "district": "2. Leopoldstadt", "note": "Novostavby pri Prateri, jazierka, U2 Krieau/Stadion"}, "geometry": {"type": "Polygon", "coordinates": [[[16.406, 48.212], [16.422, 48.213], [16.423, 48.22], [16.407, 48.219], [16.406, 48.212]]]}}, {"type": "Feature", "properties": {"name": "Neu Marx / St. Marx", "district": "3. Landstraße", "note": "Mediálne a technologické centrum, nové bývanie, S-Bahn + U3"}, "geometry": {"type": "Polygon", "coordinates": [[[16.4, 48.187], [16.413, 48.188], [16.413, 48.194], [16.401, 48.1935], [16.4, 48.187]]]}}, {"type": "Feature", "properties": {"name": "Sonnwendviertel", "district": "10. Favoriten", "note": "Pri Hauptbahnhof, Helmut-Zilk-Park, moderná architektúra"}, "geometry": {"type": "Polygon", "coordinates": [[[16.37, 48.183], [16.382, 48.1835], [16.383, 48.19], [16.372, 48.189], [16.37, 48.183]]]}}, {"type": "Feature", "properties": {"name": "Biotope City / Wienerberg", "district": "10. Favoriten", "note": "Zelené novostavby, Wienerberg, U6 Wolfganggasse/Altmannsdorf"}, "geometry": {"type": "Polygon", "coordinates": [[[16.333, 48.156], [16.35, 48.156], [16.35, 48.165], [16.333, 48.165], [16.333, 48.156]]]}}, {"type": "Feature", "properties": {"name": "Seestadt Aspern", "district": "22. Donaustadt", "note": "Jazero, U2 Seestadt, plánovaná štvrť s rušným parterom"}, "geometry": {"type": "Polygon", "coordinates": [[[16.495, 48.222], [16.515, 48.222], [16.515, 48.231], [16.495, 48.231], [16.495, 48.222]]]}}]};
+  (gj => {
+    L.geoJSON(gj, {
+      style: { color: "#0f6b6f", weight: 2, fillColor: "#0f6b6f", fillOpacity: .15 },
+      onEachFeature: (f, layer) => layer.bindTooltip(
+        `<b>${esc(f.properties.name)}</b><br>${esc(f.properties.district)}<br>${esc(f.properties.note)}`, { sticky: true })
+    }).addTo(map);
+  })(ZONES);
+
+  const icon = L.divIcon({ className: "", html: '<div class="pin"></div>', iconSize: [14, 14] });
+
+  fetch(`${SUPABASE_URL}/rest/v1/vienna_properties?select=*&order=created_at.desc&limit=500`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+  })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(rows => {
+      rows.filter(p => p.lat && p.lng).forEach(p => {
+        const price = p.price ? Number(p.price).toLocaleString("sk-SK") + " €" : "cena neuvedená";
+        const days = Math.floor((Date.now() - new Date(p.created_at)) / 864e5);
+        L.marker([p.lat, p.lng], { icon }).addTo(map).bindPopup(
+          `<b>${esc(p.title)}</b><br>${esc(p.neighborhood || "")}<br>` +
+          `${p.size_m2} m² · ${p.rooms} izby · ${price}<br>${esc(p.address)}<br>` +
+          `<small>pridané pred ${days} d</small><br><a href="${esc(p.url)}" target="_blank" rel="noopener">Otvoriť inzerát</a>`);
+      });
+      status.textContent = rows.length ? `${rows.length} ponúk` : "Zatiaľ žiadne ponuky – spusti scraper.";
+    })
+    .catch(e => { status.textContent = "Chyba načítania: " + e.message + " (skontroluj URL, kľúč a RLS politiku)"; });
+</script>
+</body>
+</html>
