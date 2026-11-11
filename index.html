@@ -21,7 +21,13 @@
   .pin.in { width:22px; height:22px; background:#d4572a; }
   .legend { font-size:.8rem; opacity:.85; display:flex; align-items:center; gap:4px; }
   .legend .d { width:10px; height:10px; border-radius:50%; display:inline-block; margin-left:8px; }
-  .legend .in { background:#d4572a; } .legend .near { background:#e6a100; } .legend .far { background:#8a9a9b; }
+  .legend .in { background:#d4572a; } .legend .near { background:#e6a100; } .legend .far { background:#8a9a9b; } .legend .ap { background:#fff; border:2px dashed #5b6b6e; box-sizing:border-box; }
+  .pin.approx { background:#fff; border:2px dashed #5b6b6e; }
+  .poi-panel { background:rgba(255,255,255,.95); color:#1d2a2e; padding:8px 10px; border-radius:8px; box-shadow:0 1px 6px rgba(0,0,0,.3); font-size:.85rem; line-height:1.7; }
+  .poi-panel b { display:block; margin-bottom:2px; }
+  .poi-panel label { display:flex; align-items:center; gap:6px; }
+  .poi-panel i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .poi-panel small { display:block; opacity:.7; line-height:1.3; margin-top:4px; max-width:190px; }
   .tag { display:inline-block; padding:0 6px; border-radius:8px; font-size:.75rem; background:#dfeee0; color:#1d4d27; }
 </style>
 </head>
@@ -30,7 +36,7 @@
   <h1>Viedeň – byty od 3 izieb do 430 000 €</h1>
   <span id="status">Načítavam…</span>
   <label style="font-size:.85rem"><input type="checkbox" id="onlyFree"> len potvrdený voľný prenájom</label>
-  <span class="legend"><i class="d in"></i>vo štvrti <i class="d near"></i>do 1,5 km <i class="d far"></i>ostatné</span>
+  <span class="legend"><i class="d in"></i>vo štvrti <i class="d near"></i>do 1,5 km <i class="d far"></i>ostatné <i class="d ap"></i>približná poloha</span>
 </header>
 <div id="map"></div>
 
@@ -69,12 +75,12 @@
     list.forEach(p => {
       const price = p.price ? Number(p.price).toLocaleString("sk-SK") + " €" : "cena neuvedená";
       const days = Math.floor((Date.now() - new Date(p.created_at)) / 864e5);
-      const where = p.zone_status === "in" ? `vo štvrti ${esc(p.neighborhood)}`
+      const where = p.loc_approx ? "poloha len približne (stred PSČ), presná adresa v e-maile chýba" : p.zone_status === "in" ? `vo štvrti ${esc(p.neighborhood)}`
         : p.zone_status === "near" ? `${(p.dist_zone_m / 1000).toFixed(1)} km od štvrte ${esc(p.neighborhood)}` : "";
       const build = [p.build_type, p.build_year].filter(Boolean).join(", ");
       const rent = p.rental === "free" ? '<span class="tag">voľne prenajímateľný</span>' : "prenájom: neuvedené";
-      L.marker([p.lat, p.lng], { icon: mkIcon(p.zone_status) }).addTo(layer).bindPopup(
-        `<b>${esc(p.title)}</b><br>${where ? where + "<br>" : ""}` +
+      L.marker([p.lat, p.lng], { icon: mkIcon(p.loc_approx ? "approx" : p.zone_status) }).addTo(layer).bindPopup(
+        `<b>${esc(p.title)}</b><br><small>zdroj: ${esc(p.source || "willhaben")}</small><br>${where ? where + "<br>" : ""}` +
         `${p.size_m2 ?? "?"} m² · ${p.rooms} izby · ${price}<br>${esc(p.address)}<br>` +
         `${build ? esc(build) + "<br>" : ""}${rent}<br>` +
         `<small>pridané pred ${days} d</small><br><a href="${esc(p.url)}" target="_blank" rel="noopener">Otvoriť inzerát</a>`);
@@ -90,6 +96,72 @@
     .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(data => { rows = data; render(); })
     .catch(e => { status.textContent = "Chyba načítania: " + e.message + " (skontroluj URL, kľúč a RLS politiku)"; });
+
+  // ---------- Vrstvy okolia (OpenStreetMap / Overpass), vypnuté predvolene ----------
+  const ARTHOUSE = /filmcasino|votiv|burg ?kino|metro ?kino|top ?kino|gartenbau|schikaneder|admiral|stadtkino|filmhaus|breitenseer|filmarchiv/i;
+  const POI = {
+    cinema:  { label: "Kiná (★ artové)",  color: "#7b3fa0", q: 'nwr["amenity"="cinema"]',           minZoom: 12 },
+    climb:   { label: "Lezecké steny",    color: "#1f77b4", q: 'nwr["sport"="climbing"]',            minZoom: 12 },
+    fitness: { label: "Fitness centrá",   color: "#2e8b57", q: 'nwr["leisure"="fitness_centre"]',    minZoom: 13 },
+    cafe:    { label: "Kaviarne",         color: "#a0622d", q: 'nwr["amenity"="cafe"]',              minZoom: 14 },
+  };
+  Object.values(POI).forEach(p => { p.group = L.layerGroup(); p.ids = new Set(); p.on = false; });
+  const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+  const poiNote = document.createElement("small");
+
+  async function overpass(query) {
+    for (const url of OVERPASS) {
+      try {
+        const r = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(query) });
+        if (r.ok) return (await r.json()).elements || [];
+      } catch (e) { /* skús ďalší server */ }
+    }
+    throw new Error("Overpass nedostupný");
+  }
+
+  async function loadPoi(key) {
+    const p = POI[key];
+    if (!p.on) return;
+    if (map.getZoom() < p.minZoom) { poiNote.textContent = `Pre „${p.label}“ priblíž mapu (zoom ≥ ${p.minZoom}).`; return; }
+    poiNote.textContent = "Načítavam…";
+    const b = map.getBounds().pad(0.15);
+    const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].join(",");
+    try {
+      const els = await overpass(`[out:json][timeout:25];(${p.q}(${bbox}););out center tags 600;`);
+      els.forEach(el => {
+        const id = el.type + el.id;
+        const lat = el.lat ?? el.center?.lat, lng = el.lon ?? el.center?.lon;
+        if (p.ids.has(id) || lat == null) return;
+        p.ids.add(id);
+        const t = el.tags || {}, name = t.name || p.label;
+        const art = key === "cinema" && ARTHOUSE.test(name);
+        const web = t.website || t["contact:website"];
+        L.circleMarker([lat, lng], { radius: art ? 8 : 5, color: "#fff", weight: 1.5, fillColor: p.color, fillOpacity: .9 })
+          .bindPopup(`<b>${esc(name)}</b>${art ? " ★" : ""}<br><small>${esc(p.label)}</small>` +
+                     (web && /^https?:\/\//.test(web) ? `<br><a href="${esc(web)}" target="_blank" rel="noopener">web</a>` : ""))
+          .addTo(p.group);
+      });
+      poiNote.textContent = "";
+    } catch (e) { poiNote.textContent = "Chyba načítania vrstvy."; }
+  }
+
+  const panel = L.control({ position: "topright" });
+  panel.onAdd = () => {
+    const d = L.DomUtil.create("div", "poi-panel");
+    d.innerHTML = "<b>Vrstvy okolia</b>" + Object.entries(POI).map(([k, p]) =>
+      `<label><input type="checkbox" data-k="${k}"><i style="background:${p.color}"></i>${p.label}</label>`).join("");
+    d.appendChild(poiNote);
+    L.DomEvent.disableClickPropagation(d);
+    d.addEventListener("change", e => {
+      const k = e.target.dataset.k, p = POI[k];
+      p.on = e.target.checked;
+      if (p.on) { p.group.addTo(map); loadPoi(k); } else { map.removeLayer(p.group); poiNote.textContent = ""; }
+    });
+    return d;
+  };
+  panel.addTo(map);
+  let poiTimer;
+  map.on("moveend", () => { clearTimeout(poiTimer); poiTimer = setTimeout(() => Object.keys(POI).forEach(loadPoi), 600); });
 </script>
 </body>
 </html>
